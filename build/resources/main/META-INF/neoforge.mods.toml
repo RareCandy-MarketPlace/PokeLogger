@@ -1,0 +1,30 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "pokelogger"
+version = "${file.jarVersion}"
+displayName = "PokeLogger"
+description = "CoreProtect-style logging & lookup for Pixelmon events: trades, gifts, deletions, captures, evolutions, held items."
+
+[[dependencies.pokelogger]]
+    modId = "neoforge"
+    type = "required"
+    versionRange = "[21.1,)"
+    ordering = "NONE"
+    side = "SERVER"
+
+[[dependencies.pokelogger]]
+    modId = "minecraft"
+    type = "required"
+    versionRange = "[1.21.1,1.21.2)"
+    ordering = "NONE"
+    side = "BOTH"
+
+[[dependencies.pokelogger]]
+    modId = "pixelmon"
+    type = "required"
+    versionRange = "[9.3.0,)"
+    ordering = "AFTER"
+    side = "SERVER"
