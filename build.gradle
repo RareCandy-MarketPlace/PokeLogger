@@ -1,0 +1,54 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev' version '2.0.+'
+}
+
+version = '0.1.0'
+group = 'com.example.pokelogger'
+
+base {
+    archivesName = 'pokelogger'
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    mavenCentral()
+    // Pixelmon is NOT on a public maven repo (their CurseMaven listing has
+    // third-party sharing disabled). You must install the Pixelmon jar into
+    // your local maven repo yourself, e.g.:
+    //   mvn install:install-file -Dfile=Pixelmon-1.21.1-9.3.16-universal.jar \
+    //       -DgroupId=com.pixelmonmod -DartifactId=pixelmon -Dversion=9.3.16 -Dpackaging=jar
+    mavenLocal()
+}
+
+neoForge {
+    version = "21.1.172" // matches Pixelmon 9.3.x for MC 1.21.1 - confirm against your server's NeoForge build
+
+    runs {
+        server {
+            gameDirectory = file('run')
+        }
+    }
+
+    mods {
+        pokelogger {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // Pixelmon as a compile-time dependency, provided at runtime by the server
+    compileOnly 'com.pixelmonmod:pixelmon:9.3.16'
+
+    // Bundled SQLite driver - embedded into the mod jar via jarJar so server
+    // owners don't need to install anything extra
+    implementation 'org.xerial:sqlite-jdbc:3.46.1.3'
+    jarJar 'org.xerial:sqlite-jdbc:3.46.1.3'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
