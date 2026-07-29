@@ -4,7 +4,7 @@ plugins {
     id 'net.neoforged.moddev' version '2.0.+'
 }
 
-version = '0.1.0'
+version = '0.2.0'
 group = 'com.example.pokelogger'
 
 base {
@@ -25,12 +25,6 @@ repositories {
 
 neoForge {
     version = "21.1.172" // matches Pixelmon 9.3.x for MC 1.21.1 - confirm against your server's NeoForge build
-
-    runs {
-        server {
-            gameDirectory = file('run')
-        }
-    }
 
     mods {
         pokelogger {
