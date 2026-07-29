@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: com.pixelmonmod:pixelmon:9.3.16" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="com.pixelmonmod" artifactId="pixelmon" version="9.3.16" baseVersion="9.3.16" />
+    <CLASSES>
+      <root url="jar://$MAVEN_REPOSITORY$/com/pixelmonmod/pixelmon/9.3.16/Pixelmon-9.3.16.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

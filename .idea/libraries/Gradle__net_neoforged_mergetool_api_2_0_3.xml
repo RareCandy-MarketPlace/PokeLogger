@@ -1,0 +1,12 @@
+<component name="libraryTable">
+  <library name="Gradle: net.neoforged:mergetool:api:2.0.3" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="net.neoforged" artifactId="mergetool" version="2.0.3" baseVersion="2.0.3" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/net.neoforged/mergetool/2.0.3/1275202cbbb248f49345cf6787ce299afd9a02fb/mergetool-2.0.3-api.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/net.neoforged/mergetool/2.0.3/585e7eb44336dfe60a8cc48ed8a9cd833bc263bb/mergetool-2.0.3-sources.jar!/" />
+    </SOURCES>
+  </library>
+</component>
