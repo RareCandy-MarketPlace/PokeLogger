@@ -30,10 +30,13 @@ public class Database {
         migrateSchema();
     }
 
-    /** Closes and reopens the connection against the same file. Used by /pokelog reload. */
     public synchronized void reload() throws SQLException {
         close();
         open();
+    }
+
+    public File getConfigDir() {
+        return dbFile.getParentFile();
     }
 
     private void createSchema() throws SQLException {
@@ -62,7 +65,6 @@ public class Database {
         }
     }
 
-    /** Adds columns introduced after the original release, for people upgrading an existing DB file. */
     private void migrateSchema() throws SQLException {
         addColumnIfMissing("change_type", "TEXT");
         addColumnIfMissing("rolled_back", "INTEGER DEFAULT 0");
@@ -119,15 +121,6 @@ public class Database {
         return id == null ? null : id.toString();
     }
 
-    /**
-     * Main lookup used by /pokelog lookup and /pokelog l.
-     * All filters are optional/nullable and combine with AND.
-     *
-     * @param actions     raw action strings (TRADE, GIFT, CAPTURE, EVOLVE, DELETE, HELD_ITEM) or null for all
-     * @param changeTypes GAIN_POKEMON / LOSS_POKEMON / ITEM_GAIN / ITEM_LOSS or null for all
-     * @param textSearch  matched against species, nickname, and detail (for pokemon/item name filtering) or null
-     * @param sinceMillis only rows newer than this epoch millis, or null for no lower bound
-     */
     public List<LogRow> lookupByName(String playerName, Set<String> actions, Set<String> changeTypes,
                                      String textSearch, Long sinceMillis, int limit) {
         StringBuilder sql = new StringBuilder(
@@ -179,13 +172,42 @@ public class Database {
         return rows;
     }
 
+    /** Full, unfiltered-by-count history for one player, oldest first - used by /plr export. */
+    public List<LogRow> lookupAllForExport(String playerName, Long sinceMillis) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back " +
+                        "FROM poke_log WHERE player_name = ? COLLATE NOCASE");
+        List<Object> params = new ArrayList<>();
+        params.add(playerName);
+        if (sinceMillis != null) {
+            sql.append(" AND timestamp >= ?");
+            params.add(sinceMillis);
+        }
+        sql.append(" ORDER BY timestamp ASC");
+
+        List<LogRow> rows = new ArrayList<>();
+        try (PreparedStatement ps = connection.prepareStatement(sql.toString())) {
+            for (int i = 0; i < params.size(); i++) ps.setObject(i + 1, params.get(i));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new LogRow(rs.getLong("id"), rs.getLong("timestamp"), rs.getString("action"),
+                            rs.getString("player_name"), rs.getString("other_name"), rs.getString("species"),
+                            rs.getString("nickname"), rs.getInt("level"), rs.getInt("shiny") == 1,
+                            rs.getString("detail"), rs.getString("change_type"), rs.getInt("rolled_back") == 1));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to export PokeLogger entries", e);
+        }
+        return rows;
+    }
+
     private static String placeholders(int count) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < count; i++) sb.append(i == 0 ? "?" : ",?");
         return sb.toString();
     }
 
-    /** Nth most recent DELETE entry (1 = most recent) for a player that still has an NBT snapshot and hasn't been rolled back. */
     public RollbackCandidate findDeleteForRollback(String playerName, int index) {
         String sql = """
             SELECT id, timestamp, species, nickname, level, shiny, pokemon_uuid, nbt_snapshot
@@ -217,6 +239,28 @@ public class Database {
             ps.executeUpdate();
         } catch (SQLException e) {
             LOGGER.log(Level.WARNING, "Failed to mark row rolled back", e);
+        }
+    }
+
+    public int countOlderThan(long cutoffMillis) {
+        try (PreparedStatement ps = connection.prepareStatement("SELECT COUNT(*) FROM poke_log WHERE timestamp < ?")) {
+            ps.setLong(1, cutoffMillis);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to count old PokeLogger entries", e);
+            return 0;
+        }
+    }
+
+    public int deleteOlderThan(long cutoffMillis) {
+        try (PreparedStatement ps = connection.prepareStatement("DELETE FROM poke_log WHERE timestamp < ?")) {
+            ps.setLong(1, cutoffMillis);
+            return ps.executeUpdate();
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to purge old PokeLogger entries", e);
+            return 0;
         }
     }
 
