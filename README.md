@@ -1,6 +1,6 @@
 # PokeLogger
 
-A CoreProtect-style logger for Pixelmon 9.3.16. Logs trades, /pokegift transfers, Pokémon deletions, captures, evolutions, and held-item changes to a local SQLite database, with a `/pokelog lookup <player>` command to review history.
+A CoreProtect-style logger for Pixelmon 9.3.16. Logs trades, /pokegift transfers, Pokémon deletions, captures, evolutions, and held-item changes to a local SQLite database, with a `/plr lookup <player>` command to review history.
 
 ## Contribution
 Strict code format is enforced using **Spotless** paired with **Palantir Java Format**.
@@ -100,11 +100,11 @@ Lookups require a **player** and a **time frame (`t:`)**. Query tokens can be pr
 
 - **Rollback**-`PixelmonDeletedEvent` fires with the full Pokémon NBT still
  intact, so we snapshot it into the `nbt_snapshot` column. Actually writing
- a `/pokelog rollback <uuid>` command that reconstructs and re-inserts that
+ a `/plr rollback <uuid>` command that reconstructs and re-inserts that
 
  - Pokémon into the player's PC is intentionally left out - it needs decisions
  about which storage API to write into and a confirmation flow (like
  CoreProtect's rollback preview), which is a project of its own.
-- **GUI-based trade cancellation / permission nodes**- only op-level (`/pokelog`
+- **GUI-based trade cancellation / permission nodes**- only op-level (`/plr`
  requires permission level 2) is wired up. Swap `hasPermission(2)` for a
  proper permission-mod integration (LuckPerms etc.) if you want finer control.
