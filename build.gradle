@@ -1,48 +1,98 @@
 plugins {
-    id 'java-library'
     id 'idea'
-    id 'net.neoforged.moddev' version '2.0.+'
+    id 'java'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.78'
+    id 'com.diffplug.spotless' version '8.9.0'
 }
 
-version = '0.2.0'
-group = 'com.example.pokelogger'
-
-base {
-    archivesName = 'pokelogger'
-}
-
-java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+version = mod_version
+group = mod_group_id
 
 repositories {
     mavenCentral()
-    // Pixelmon is NOT on a public maven repo (their CurseMaven listing has
-    // third-party sharing disabled). You must install the Pixelmon jar into
-    // your local maven repo yourself, e.g.:
-    //   mvn install:install-file -Dfile=Pixelmon-1.21.1-9.3.16-universal.jar \
-    //       -DgroupId=com.pixelmonmod -DartifactId=pixelmon -Dversion=9.3.16 -Dpackaging=jar
-    mavenLocal()
-}
+    ivy {
+        setUrl('https://download.nodecdn.net/containers/reforged/universal/release')
 
-neoForge {
-    version = "21.1.172" // matches Pixelmon 9.3.x for MC 1.21.1 - confirm against your server's NeoForge build
-
-    mods {
-        pokelogger {
-            sourceSet sourceSets.main
+        metadataSources {
+            artifact()
+            gradleMetadata()
+        }
+        patternLayout {
+            artifact('[artifact].[ext]')
         }
     }
 }
 
-dependencies {
-    // Pixelmon as a compile-time dependency, provided at runtime by the server
-    compileOnly 'com.pixelmonmod:pixelmon:9.3.16'
+base {
+    archivesName = mod_id
+}
 
-    // Bundled SQLite driver - embedded into the mod jar via jarJar so server
-    // owners don't need to install anything extra
+tasks.withType(Jar).configureEach {
+    archiveFileName = "${mod_name}-${mod_platform}-${minecraft_version}-${mod_version}.jar"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+dependencies {
+    implementation("pixelmon:Pixelmon-${minecraft_version}-${pixelmon_version}-universal:${pixelmon_version}")
     implementation 'org.xerial:sqlite-jdbc:3.46.1.3'
     jarJar 'org.xerial:sqlite-jdbc:3.46.1.3'
+    interfaceInjectionData("pixelmon:Pixelmon-${minecraft_version}-${pixelmon_version}-universal-interfaceinjection:${pixelmon_version}@json")
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+            pixelmon_version       : pixelmon_version
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand replaceProperties
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+}
+
+// IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
+
+spotless {
+  java {
+
+    removeUnusedImports()
+    forbidWildcardImports()
+    forbidModuleImports()
+
+    cleanthat()
+
+    palantirJavaFormat()
+    
+    importOrder('', '\\n', 'java|javax', '\\n', 'net.neoforged', '\\n', 'net.minecraft', '\\n', 'com.pixelmonmod', '\\n', '\\#')
+
+  }
 }
