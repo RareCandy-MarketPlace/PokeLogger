@@ -1,4 +1,4 @@
-package com.example.pokelogger;
+package com.pokelogger;
 
 import net.neoforged.neoforge.server.permission.events.PermissionGatherEvent;
 import net.neoforged.neoforge.server.permission.nodes.PermissionNode;
@@ -18,21 +18,20 @@ public final class PokeLoggerPermissions {
     private PokeLoggerPermissions() {}
 
     public static void register(PermissionGatherEvent.Nodes event) {
-        LOOKUP   = node("lookup");
+        LOOKUP = node("lookup");
         ROLLBACK = node("rollback");
-        RESTORE  = node("restore");
-        UNDO     = node("undo");
-        PURGE    = node("purge");
-        RELOAD   = node("reload");
-        EXPORT   = node("export");
-        STATUS   = node("status");
-        HELP     = node("help");
+        RESTORE = node("restore");
+        UNDO = node("undo");
+        PURGE = node("purge");
+        RELOAD = node("reload");
+        EXPORT = node("export");
+        STATUS = node("status");
+        HELP = node("help");
 
         event.addNodes(LOOKUP, ROLLBACK, RESTORE, UNDO, PURGE, RELOAD, EXPORT, STATUS, HELP);
     }
 
     private static PermissionNode<Boolean> node(String path) {
-        return new PermissionNode<>(PokeLogger.MODID, path, PermissionTypes.BOOLEAN,
-                (player, uuid, context) -> false);
+        return new PermissionNode<>(PokeLogger.MODID, path, PermissionTypes.BOOLEAN, (player, uuid, context) -> false);
     }
 }

@@ -1,7 +1,19 @@
-package com.example.pokelogger.listener;
+package com.pokelogger.listener;
 
-import com.example.pokelogger.db.Database;
-import com.example.pokelogger.db.LogEntry;
+import com.pokelogger.db.Database;
+import com.pokelogger.db.LogEntry;
+
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import net.neoforged.bus.api.SubscribeEvent;
+
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+
 import com.pixelmonmod.pixelmon.api.events.CaptureEvent;
 import com.pixelmonmod.pixelmon.api.events.EvolveEvent;
 import com.pixelmonmod.pixelmon.api.events.HeldItemChangedEvent;
@@ -9,14 +21,6 @@ import com.pixelmonmod.pixelmon.api.events.PixelmonDeletedEvent;
 import com.pixelmonmod.pixelmon.api.events.PixelmonTradeEvent;
 import com.pixelmonmod.pixelmon.api.events.PokegiftEvent;
 import com.pixelmonmod.pixelmon.api.pokemon.Pokemon;
-import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
-import net.neoforged.bus.api.SubscribeEvent;
 
 public class PokemonEventListener {
     private final Database db;
@@ -26,14 +30,20 @@ public class PokemonEventListener {
         return t;
     });
 
-    public PokemonEventListener(Database db) { this.db = db; }
+    public PokemonEventListener(Database db) {
+        this.db = db;
+    }
 
     private void write(LogEntry entry) {
         logExecutor.submit(() -> db.insert(entry));
     }
 
     private static String speciesName(Pokemon p) {
-        try { return p.getSpecies().getName(); } catch (Exception e) { return p.getDisplayName().getString(); }
+        try {
+            return p.getSpecies().getName();
+        } catch (Exception e) {
+            return p.getDisplayName().getString();
+        }
     }
 
     private static String nicknameOf(Pokemon p) {
@@ -52,7 +62,7 @@ public class PokemonEventListener {
                 .other(p2.getUUID(), p2.getName().getString())
                 .pokemon(mon1.getUUID(), speciesName(mon1), nicknameOf(mon1), mon1.getPokemonLevel(), mon1.isShiny())
                 .detail("received " + speciesName(mon2) + " in return")
-                .changeType(null) // net-neutral: gave one, got one back
+                .changeType(null)
                 .build());
 
         write(LogEntry.builder("TRADE")
@@ -71,7 +81,6 @@ public class PokemonEventListener {
         ServerPlayer receiver = event.getReceiver();
         Pokemon mon = event.getPokemon();
 
-        // Giver's row: they lost this Pokemon.
         write(LogEntry.builder("GIFT")
                 .player(giver.getUUID(), giver.getName().getString())
                 .other(receiver.getUUID(), receiver.getName().getString())
@@ -80,7 +89,6 @@ public class PokemonEventListener {
                 .changeType("LOSS_POKEMON")
                 .build());
 
-        // Receiver's row: they gained this Pokemon. Mirrors trade's dual-row behavior.
         write(LogEntry.builder("GIFT")
                 .player(receiver.getUUID(), receiver.getName().getString())
                 .other(giver.getUUID(), giver.getName().getString())
@@ -134,7 +142,7 @@ public class PokemonEventListener {
                 .player(ownerId, mon.getOwnerName() != null ? mon.getOwnerName().getString() : "unknown")
                 .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
                 .detail("evolved to " + speciesName(mon))
-                .changeType(null) // same Pokemon, not a gain/loss
+                .changeType(null)
                 .build());
     }
 
@@ -156,5 +164,7 @@ public class PokemonEventListener {
                 .build());
     }
 
-    public void shutdown() { logExecutor.shutdown(); }
+    public void shutdown() {
+        logExecutor.shutdown();
+    }
 }

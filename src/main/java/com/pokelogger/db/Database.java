@@ -1,7 +1,15 @@
-package com.example.pokelogger.db;
+package com.pokelogger.db;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import java.io.File;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -11,8 +19,8 @@ import java.util.logging.Logger;
 
 public class Database {
     private static final Logger LOGGER = Logger.getLogger("PokeLogger");
-    private File dbFile;
-    private Connection connection;
+    private final File dbFile;
+    private HikariDataSource dataSource;
 
     public Database(File dbFile) throws SQLException {
         this.dbFile = dbFile;
@@ -20,8 +28,21 @@ public class Database {
     }
 
     private void open() throws SQLException {
-        this.connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
-        try (Statement st = connection.createStatement()) {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl("jdbc:sqlite:" + dbFile.getAbsolutePath());
+        config.setDriverClassName("org.sqlite.JDBC");
+        config.setPoolName("PokeLogger-Pool");
+        config.setMaximumPoolSize(4);
+        config.setMinimumIdle(1);
+        config.setConnectionTimeout(10_000);
+        config.setIdleTimeout(300_000);
+        config.setMaxLifetime(0);
+        config.setConnectionInitSql("PRAGMA journal_mode=WAL;");
+
+        this.dataSource = new HikariDataSource(config);
+
+        try (Connection c = dataSource.getConnection();
+                Statement st = c.createStatement()) {
             st.execute("PRAGMA journal_mode=WAL;");
             st.execute("PRAGMA synchronous=NORMAL;");
             st.execute("PRAGMA busy_timeout=5000;");
@@ -40,7 +61,8 @@ public class Database {
     }
 
     private void createSchema() throws SQLException {
-        try (Statement st = connection.createStatement()) {
+        try (Connection c = dataSource.getConnection();
+                Statement st = c.createStatement()) {
             st.execute("""
                 CREATE TABLE IF NOT EXISTS poke_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,21 +81,33 @@ public class Database {
                     nbt_snapshot TEXT
                 );
                 """);
-            st.execute("CREATE INDEX IF NOT EXISTS idx_poke_log_player ON poke_log(player_name);");
-            st.execute("CREATE INDEX IF NOT EXISTS idx_poke_log_time ON poke_log(timestamp);");
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_poke_log_player_time ON poke_log(player_name COLLATE NOCASE, timestamp DESC);");
             st.execute("CREATE INDEX IF NOT EXISTS idx_poke_log_pokemon ON poke_log(pokemon_uuid);");
+            st.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_poke_log_rollback ON poke_log(player_name COLLATE NOCASE, action, rolled_back, timestamp DESC);");
         }
     }
 
     private void migrateSchema() throws SQLException {
         addColumnIfMissing("change_type", "TEXT");
         addColumnIfMissing("rolled_back", "INTEGER DEFAULT 0");
+        dropLegacyIndexIfPresent("idx_poke_log_player");
+        dropLegacyIndexIfPresent("idx_poke_log_time");
+    }
+
+    private void dropLegacyIndexIfPresent(String indexName) throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                Statement st = c.createStatement()) {
+            st.execute("DROP INDEX IF EXISTS " + indexName + ";");
+        }
     }
 
     private void addColumnIfMissing(String column, String definition) throws SQLException {
         boolean exists = false;
-        try (Statement st = connection.createStatement();
-             ResultSet rs = st.executeQuery("PRAGMA table_info(poke_log);")) {
+        try (Connection c = dataSource.getConnection();
+                Statement st = c.createStatement();
+                ResultSet rs = st.executeQuery("PRAGMA table_info(poke_log);")) {
             while (rs.next()) {
                 if (column.equalsIgnoreCase(rs.getString("name"))) {
                     exists = true;
@@ -82,7 +116,8 @@ public class Database {
             }
         }
         if (!exists) {
-            try (Statement st = connection.createStatement()) {
+            try (Connection c = dataSource.getConnection();
+                    Statement st = c.createStatement()) {
                 st.execute("ALTER TABLE poke_log ADD COLUMN " + column + " " + definition + ";");
             }
             LOGGER.info("PokeLogger: migrated database, added column '" + column + "'");
@@ -96,7 +131,8 @@ public class Database {
                  pokemon_uuid, species, nickname, level, shiny, detail, nbt_snapshot, change_type)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """;
-        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, entry.timestamp());
             ps.setString(2, entry.action());
             ps.setString(3, str(entry.playerUuid()));
@@ -106,7 +142,8 @@ public class Database {
             ps.setString(7, str(entry.pokemonUuid()));
             ps.setString(8, entry.species());
             ps.setString(9, entry.nickname());
-            if (entry.level() == null) ps.setNull(10, Types.INTEGER); else ps.setInt(10, entry.level());
+            if (entry.level() == null) ps.setNull(10, Types.INTEGER);
+            else ps.setInt(10, entry.level());
             ps.setInt(11, entry.shiny() ? 1 : 0);
             ps.setString(12, entry.detail());
             ps.setString(13, entry.nbtSnapshot());
@@ -121,11 +158,16 @@ public class Database {
         return id == null ? null : id.toString();
     }
 
-    public List<LogRow> lookupByName(String playerName, Set<String> actions, Set<String> changeTypes,
-                                     String textSearch, Long sinceMillis, int limit) {
+    public List<LogRow> lookupByName(
+            String playerName,
+            Set<String> actions,
+            Set<String> changeTypes,
+            String textSearch,
+            Long sinceMillis,
+            int limit) {
         StringBuilder sql = new StringBuilder(
-                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back " +
-                        "FROM poke_log WHERE player_name = ? COLLATE NOCASE");
+                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back "
+                        + "FROM poke_log WHERE player_name = ? COLLATE NOCASE");
 
         List<Object> params = new ArrayList<>();
         params.add(playerName);
@@ -135,11 +177,14 @@ public class Database {
             params.addAll(actions);
         }
         if (changeTypes != null && !changeTypes.isEmpty()) {
-            sql.append(" AND change_type IN (").append(placeholders(changeTypes.size())).append(")");
+            sql.append(" AND change_type IN (")
+                    .append(placeholders(changeTypes.size()))
+                    .append(")");
             params.addAll(changeTypes);
         }
         if (textSearch != null && !textSearch.isBlank()) {
-            sql.append(" AND (species LIKE ? COLLATE NOCASE OR nickname LIKE ? COLLATE NOCASE OR detail LIKE ? COLLATE NOCASE)");
+            sql.append(
+                    " AND (species LIKE ? COLLATE NOCASE OR nickname LIKE ? COLLATE NOCASE OR detail LIKE ? COLLATE NOCASE)");
             String like = "%" + textSearch + "%";
             params.add(like);
             params.add(like);
@@ -153,17 +198,26 @@ public class Database {
         params.add(limit);
 
         List<LogRow> rows = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(sql.toString())) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql.toString())) {
             for (int i = 0; i < params.size(); i++) {
                 ps.setObject(i + 1, params.get(i));
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     rows.add(new LogRow(
-                            rs.getLong("id"), rs.getLong("timestamp"), rs.getString("action"),
-                            rs.getString("player_name"), rs.getString("other_name"), rs.getString("species"),
-                            rs.getString("nickname"), rs.getInt("level"), rs.getInt("shiny") == 1,
-                            rs.getString("detail"), rs.getString("change_type"), rs.getInt("rolled_back") == 1));
+                            rs.getLong("id"),
+                            rs.getLong("timestamp"),
+                            rs.getString("action"),
+                            rs.getString("player_name"),
+                            rs.getString("other_name"),
+                            rs.getString("species"),
+                            rs.getString("nickname"),
+                            rs.getInt("level"),
+                            rs.getInt("shiny") == 1,
+                            rs.getString("detail"),
+                            rs.getString("change_type"),
+                            rs.getInt("rolled_back") == 1));
                 }
             }
         } catch (SQLException e) {
@@ -172,11 +226,10 @@ public class Database {
         return rows;
     }
 
-    /** Full, unfiltered-by-count history for one player, oldest first - used by /plr export. */
     public List<LogRow> lookupAllForExport(String playerName, Long sinceMillis) {
         StringBuilder sql = new StringBuilder(
-                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back " +
-                        "FROM poke_log WHERE player_name = ? COLLATE NOCASE");
+                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back "
+                        + "FROM poke_log WHERE player_name = ? COLLATE NOCASE");
         List<Object> params = new ArrayList<>();
         params.add(playerName);
         if (sinceMillis != null) {
@@ -186,14 +239,24 @@ public class Database {
         sql.append(" ORDER BY timestamp ASC");
 
         List<LogRow> rows = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(sql.toString())) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql.toString())) {
             for (int i = 0; i < params.size(); i++) ps.setObject(i + 1, params.get(i));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    rows.add(new LogRow(rs.getLong("id"), rs.getLong("timestamp"), rs.getString("action"),
-                            rs.getString("player_name"), rs.getString("other_name"), rs.getString("species"),
-                            rs.getString("nickname"), rs.getInt("level"), rs.getInt("shiny") == 1,
-                            rs.getString("detail"), rs.getString("change_type"), rs.getInt("rolled_back") == 1));
+                    rows.add(new LogRow(
+                            rs.getLong("id"),
+                            rs.getLong("timestamp"),
+                            rs.getString("action"),
+                            rs.getString("player_name"),
+                            rs.getString("other_name"),
+                            rs.getString("species"),
+                            rs.getString("nickname"),
+                            rs.getInt("level"),
+                            rs.getInt("shiny") == 1,
+                            rs.getString("detail"),
+                            rs.getString("change_type"),
+                            rs.getInt("rolled_back") == 1));
                 }
             }
         } catch (SQLException e) {
@@ -217,15 +280,21 @@ public class Database {
             ORDER BY timestamp DESC
             LIMIT 1 OFFSET ?
             """;
-        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, playerName);
             ps.setInt(2, Math.max(0, index - 1));
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
                 return new RollbackCandidate(
-                        rs.getLong("id"), rs.getLong("timestamp"), rs.getString("species"),
-                        rs.getString("nickname"), rs.getInt("level"), rs.getInt("shiny") == 1,
-                        rs.getString("pokemon_uuid"), rs.getString("nbt_snapshot"));
+                        rs.getLong("id"),
+                        rs.getLong("timestamp"),
+                        rs.getString("species"),
+                        rs.getString("nickname"),
+                        rs.getInt("level"),
+                        rs.getInt("shiny") == 1,
+                        rs.getString("pokemon_uuid"),
+                        rs.getString("nbt_snapshot"));
             }
         } catch (SQLException e) {
             LOGGER.log(Level.WARNING, "Failed to find rollback candidate", e);
@@ -234,7 +303,8 @@ public class Database {
     }
 
     public void markRolledBack(long rowId) {
-        try (PreparedStatement ps = connection.prepareStatement("UPDATE poke_log SET rolled_back = 1 WHERE id = ?")) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("UPDATE poke_log SET rolled_back = 1 WHERE id = ?")) {
             ps.setLong(1, rowId);
             ps.executeUpdate();
         } catch (SQLException e) {
@@ -243,7 +313,8 @@ public class Database {
     }
 
     public int countOlderThan(long cutoffMillis) {
-        try (PreparedStatement ps = connection.prepareStatement("SELECT COUNT(*) FROM poke_log WHERE timestamp < ?")) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM poke_log WHERE timestamp < ?")) {
             ps.setLong(1, cutoffMillis);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : 0;
@@ -255,7 +326,8 @@ public class Database {
     }
 
     public int deleteOlderThan(long cutoffMillis) {
-        try (PreparedStatement ps = connection.prepareStatement("DELETE FROM poke_log WHERE timestamp < ?")) {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("DELETE FROM poke_log WHERE timestamp < ?")) {
             ps.setLong(1, cutoffMillis);
             return ps.executeUpdate();
         } catch (SQLException e) {
@@ -265,17 +337,32 @@ public class Database {
     }
 
     public void close() {
-        try {
-            if (connection != null) connection.close();
-        } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to close PokeLogger database", e);
+        if (dataSource != null) {
+            dataSource.close();
         }
     }
 
-    public record LogRow(long id, long timestamp, String action, String playerName, String otherName,
-                         String species, String nickname, int level, boolean shiny, String detail,
-                         String changeType, boolean rolledBack) {}
+    public record LogRow(
+            long id,
+            long timestamp,
+            String action,
+            String playerName,
+            String otherName,
+            String species,
+            String nickname,
+            int level,
+            boolean shiny,
+            String detail,
+            String changeType,
+            boolean rolledBack) {}
 
-    public record RollbackCandidate(long id, long timestamp, String species, String nickname,
-                                    int level, boolean shiny, String pokemonUuid, String nbtSnapshot) {}
+    public record RollbackCandidate(
+            long id,
+            long timestamp,
+            String species,
+            String nickname,
+            int level,
+            boolean shiny,
+            String pokemonUuid,
+            String nbtSnapshot) {}
 }
