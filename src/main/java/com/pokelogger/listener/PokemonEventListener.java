@@ -8,19 +8,27 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
+import com.pixelmonmod.pixelmon.api.daycare.event.DayCareEvent;
 import com.pixelmonmod.pixelmon.api.events.CaptureEvent;
+import com.pixelmonmod.pixelmon.api.events.EggHatchEvent;
 import com.pixelmonmod.pixelmon.api.events.EvolveEvent;
 import com.pixelmonmod.pixelmon.api.events.HeldItemChangedEvent;
+import com.pixelmonmod.pixelmon.api.events.LevelUpEvent;
 import com.pixelmonmod.pixelmon.api.events.PixelmonDeletedEvent;
 import com.pixelmonmod.pixelmon.api.events.PixelmonTradeEvent;
 import com.pixelmonmod.pixelmon.api.events.PokegiftEvent;
+import com.pixelmonmod.pixelmon.api.events.storage.ChangeStorageEvent;
 import com.pixelmonmod.pixelmon.api.pokemon.Pokemon;
+import com.pixelmonmod.pixelmon.api.storage.PCStorage;
+import com.pixelmonmod.pixelmon.api.storage.PlayerPartyStorage;
 
 public class PokemonEventListener {
     private final Database db;
@@ -105,7 +113,10 @@ public class PokemonEventListener {
 
         String nbt;
         try {
-            nbt = mon.writeToNBT(new CompoundTag(), player.registryAccess()).toString();
+            RegistryAccess registryAccess = player.getServer() != null
+                    ? player.getServer().registryAccess()
+                    : ServerLifecycleHooks.getCurrentServer().registryAccess();
+            nbt = mon.writeToNBT(new CompoundTag(), registryAccess).toString();
         } catch (Exception e) {
             nbt = null;
         }
@@ -147,6 +158,35 @@ public class PokemonEventListener {
     }
 
     @SubscribeEvent
+    public void onEggHatch(EggHatchEvent.Post event) {
+        Pokemon mon = event.getPokemon();
+        if (mon == null) return;
+        UUID ownerId = mon.getOwnerPlayerUUID();
+        if (ownerId == null) return;
+
+        write(LogEntry.builder("HATCH")
+                .player(ownerId, mon.getOwnerName() != null ? mon.getOwnerName().getString() : "unknown")
+                .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
+                .changeType("GAIN_POKEMON")
+                .build());
+    }
+
+    @SubscribeEvent
+    public void onLevelUp(LevelUpEvent.Post event) {
+        Pokemon mon = event.getPokemon();
+        if (mon == null) return;
+        UUID ownerId = mon.getOwnerPlayerUUID();
+        if (ownerId == null) return;
+
+        write(LogEntry.builder("LEVEL_UP")
+                .player(ownerId, mon.getOwnerName() != null ? mon.getOwnerName().getString() : "unknown")
+                .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
+                .detail("leveled up to " + mon.getPokemonLevel())
+                .changeType(null)
+                .build());
+    }
+
+    @SubscribeEvent
     public void onHeldItemChanged(HeldItemChangedEvent.Post event) {
         Pokemon mon = event.getPokemon();
         UUID ownerId = mon.getOwnerPlayerUUID();
@@ -161,6 +201,52 @@ public class PokemonEventListener {
                 .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
                 .detail("now holding: " + itemName)
                 .changeType(removed ? "ITEM_LOSS" : "ITEM_GAIN")
+                .build());
+    }
+
+    @SubscribeEvent
+    public void onStorageChange(ChangeStorageEvent event) {
+        Pokemon mon = event.pokemon;
+        if (mon == null) return;
+
+        UUID ownerId = mon.getOwnerPlayerUUID();
+        if (ownerId == null) return;
+
+        String ownerName = mon.getOwnerName() != null ? mon.getOwnerName().getString() : "unknown";
+
+        if (event.oldStorage instanceof PlayerPartyStorage && event.newStorage instanceof PCStorage) {
+            write(LogEntry.builder("PC_DEPOSIT")
+                    .player(ownerId, ownerName)
+                    .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
+                    .detail("deposited to box " + event.newPosition.box)
+                    .changeType(null)
+                    .build());
+        } else if (event.oldStorage instanceof PCStorage && event.newStorage instanceof PlayerPartyStorage) {
+            write(LogEntry.builder("PC_WITHDRAW")
+                    .player(ownerId, ownerName)
+                    .pokemon(mon.getUUID(), speciesName(mon), nicknameOf(mon), mon.getPokemonLevel(), mon.isShiny())
+                    .detail("withdrawn from box " + event.oldPosition.box)
+                    .changeType(null)
+                    .build());
+        }
+    }
+
+    @SubscribeEvent
+    public void onDayCareCollect(DayCareEvent.PostCollect event) {
+        ServerPlayer player = event.getPlayer();
+        Pokemon child = event.getChildGiven();
+        if (player == null || child == null) return;
+
+        write(LogEntry.builder("DAYCARE_EGG")
+                .player(player.getUUID(), player.getName().getString())
+                .pokemon(
+                        child.getUUID(),
+                        speciesName(child),
+                        nicknameOf(child),
+                        child.getPokemonLevel(),
+                        child.isShiny())
+                .detail("collected bred egg")
+                .changeType("GAIN_POKEMON")
                 .build());
     }
 

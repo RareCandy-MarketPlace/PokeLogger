@@ -2,6 +2,7 @@ package com.pokelogger;
 
 import com.pokelogger.command.PokeLogCommand;
 import com.pokelogger.db.Database;
+import com.pokelogger.listener.InspectEventListener;
 import com.pokelogger.listener.PokemonEventListener;
 
 import java.io.File;
@@ -26,6 +27,7 @@ public class PokeLogger {
 
     private Database database;
     private PokemonEventListener listener;
+    private InspectEventListener inspectListener;
     private File dbFile;
 
     public PokeLogger(IEventBus modEventBus) {
@@ -48,7 +50,9 @@ public class PokeLogger {
         try {
             database = new Database(dbFile);
             listener = new PokemonEventListener(database);
+            inspectListener = new InspectEventListener(database);
             NeoForge.EVENT_BUS.register(listener);
+            NeoForge.EVENT_BUS.register(inspectListener);
             Pixelmon.EVENT_BUS.register(listener);
             LOGGER.info("PokeLogger: database opened at " + dbFile.getAbsolutePath());
         } catch (Exception e) {
@@ -79,6 +83,7 @@ public class PokeLogger {
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         if (listener != null) listener.shutdown();
+        if (inspectListener != null) inspectListener.shutdown();
         if (database != null) database.close();
     }
 }
