@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.pokelogger.PokeLoggerPermissions;
 import com.pokelogger.db.Database;
 
 import java.io.File;
@@ -19,7 +20,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BooleanSupplier;
@@ -33,10 +36,17 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
+
+import com.pixelmonmod.pixelmon.api.pokemon.Pokemon;
+import com.pixelmonmod.pixelmon.api.pokemon.PokemonFactory;
+import com.pixelmonmod.pixelmon.api.registries.PixelmonSpecies;
+import com.pixelmonmod.pixelmon.api.storage.StorageProxy;
 
 public final class PokeLogCommand {
 
@@ -46,6 +56,8 @@ public final class PokeLogCommand {
     private static final int MAX_COUNT = 200;
     private static final int PAGE_SIZE = 8;
     private static final Pattern DURATION = Pattern.compile("(\\d+)([dhms])");
+
+    private static final Set<UUID> INSPECT_PLAYERS = ConcurrentHashMap.newKeySet();
 
     private static final ExecutorService QUERY_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "PokeLogger-Query");
@@ -57,6 +69,68 @@ public final class PokeLogCommand {
 
     public static void shutdown() {
         QUERY_EXECUTOR.shutdown();
+    }
+
+    public static boolean isInspecting(UUID uuid) {
+        return INSPECT_PLAYERS.contains(uuid);
+    }
+
+    public static void toggleInspect(ServerPlayer player) {
+        if (INSPECT_PLAYERS.remove(player.getUUID())) {
+            player.sendSystemMessage(
+                    Component.literal("PokeLogger inspector disabled.").withStyle(ChatFormatting.RED));
+        } else {
+            INSPECT_PLAYERS.add(player.getUUID());
+            player.sendSystemMessage(Component.literal(
+                            "PokeLogger inspector enabled. Right/Left click Pokemon or blocks to inspect them.")
+                    .withStyle(ChatFormatting.GREEN));
+        }
+    }
+
+    public static void runInspectLookup(ServerPlayer player, Database db, UUID pokemonUuid) {
+        QUERY_EXECUTOR.execute(() -> {
+            var rows = db.lookupByPokemon(pokemonUuid.toString(), DEFAULT_COUNT);
+            player.server.execute(() -> {
+                if (rows.isEmpty()) {
+                    player.sendSystemMessage(Component.literal("No history found for this Pokemon.")
+                            .withStyle(ChatFormatting.GRAY));
+                    return;
+                }
+
+                player.sendSystemMessage(Component.literal("--- PokeLogger: Entity Inspector ---")
+                        .withStyle(ChatFormatting.GOLD));
+                for (var row : rows) {
+                    player.sendSystemMessage(buildLine(row));
+                }
+            });
+        });
+    }
+
+    public static void runBlockInspectLookup(ServerPlayer player, Database db, int x, int y, int z, String dim) {
+        QUERY_EXECUTOR.execute(() -> {
+            var rows = db.lookupBlock(x, y, z, dim, DEFAULT_COUNT);
+            player.server.execute(() -> {
+                if (rows.isEmpty()) {
+                    player.sendSystemMessage(Component.literal("No block history found at " + x + ", " + y + ", " + z)
+                            .withStyle(ChatFormatting.GRAY));
+                    return;
+                }
+
+                player.sendSystemMessage(
+                        Component.literal("--- PokeLogger: Block Inspector (" + x + ", " + y + ", " + z + ") ---")
+                                .withStyle(ChatFormatting.GOLD));
+                for (var row : rows) {
+                    String time = TIME_FMT.format(Instant.ofEpochMilli(row.timestamp()));
+                    ChatFormatting color = row.action().equals("PLACE") ? ChatFormatting.GREEN : ChatFormatting.RED;
+                    player.sendSystemMessage(Component.literal("[" + time + "] ")
+                            .withStyle(ChatFormatting.DARK_GRAY)
+                            .append(Component.literal(pad(row.action(), 6)).withStyle(color))
+                            .append(Component.literal(" " + row.playerName() + " ")
+                                    .withStyle(ChatFormatting.AQUA))
+                            .append(Component.literal(row.blockId()).withStyle(ChatFormatting.WHITE)));
+                }
+            });
+        });
     }
 
     public static void register(
@@ -77,6 +151,20 @@ public final class PokeLogCommand {
                 .requires(src -> hasNode(src, "lookup"))
                 .executes(ctx -> usage(ctx.getSource()))
                 .then(queryArg);
+
+        var inspectLiteral = Commands.literal("inspect")
+                .requires(src -> hasNode(src, "lookup"))
+                .executes(ctx -> {
+                    toggleInspect(ctx.getSource().getPlayerOrException());
+                    return 1;
+                });
+
+        var iLiteral = Commands.literal("i")
+                .requires(src -> hasNode(src, "lookup"))
+                .executes(ctx -> {
+                    toggleInspect(ctx.getSource().getPlayerOrException());
+                    return 1;
+                });
 
         var confirmLiteral = Commands.literal("confirm")
                 .executes(ctx -> doRollback(
@@ -152,6 +240,8 @@ public final class PokeLogCommand {
         var plLiteral = Commands.literal("plr")
                 .then(lookupLiteral)
                 .then(lLiteral)
+                .then(inspectLiteral)
+                .then(iLiteral)
                 .then(rollbackLiteral)
                 .then(undoLiteral)
                 .then(purgeLiteral)
@@ -177,15 +267,15 @@ public final class PokeLogCommand {
             if (src.getEntity() instanceof ServerPlayer player) {
                 var node =
                         switch (nodeName) {
-                            case "lookup" -> com.pokelogger.PokeLoggerPermissions.LOOKUP;
-                            case "rollback" -> com.pokelogger.PokeLoggerPermissions.ROLLBACK;
-                            case "restore" -> com.pokelogger.PokeLoggerPermissions.RESTORE;
-                            case "undo" -> com.pokelogger.PokeLoggerPermissions.UNDO;
-                            case "reload" -> com.pokelogger.PokeLoggerPermissions.RELOAD;
-                            case "purge" -> com.pokelogger.PokeLoggerPermissions.PURGE;
-                            case "export" -> com.pokelogger.PokeLoggerPermissions.EXPORT;
-                            case "status" -> com.pokelogger.PokeLoggerPermissions.STATUS;
-                            case "help" -> com.pokelogger.PokeLoggerPermissions.HELP;
+                            case "lookup" -> PokeLoggerPermissions.LOOKUP;
+                            case "rollback" -> PokeLoggerPermissions.ROLLBACK;
+                            case "restore" -> PokeLoggerPermissions.RESTORE;
+                            case "undo" -> PokeLoggerPermissions.UNDO;
+                            case "reload" -> PokeLoggerPermissions.RELOAD;
+                            case "purge" -> PokeLoggerPermissions.PURGE;
+                            case "export" -> PokeLoggerPermissions.EXPORT;
+                            case "status" -> PokeLoggerPermissions.STATUS;
+                            case "help" -> PokeLoggerPermissions.HELP;
                             default -> null;
                         };
                 if (node != null) {
@@ -223,8 +313,14 @@ public final class PokeLogCommand {
                     "trade",
                     "gift",
                     "capture",
+                    "hatch",
+                    "daycare",
                     "evolve",
+                    "levelup",
                     "delete",
+                    "deposit",
+                    "withdraw",
+                    "itemused",
                     "helditem",
                     "pokemon",
                     "+pokemon",
@@ -349,6 +445,8 @@ public final class PokeLogCommand {
                     actions.add("DELETE");
                     actions.add("GIFT");
                     actions.add("TRADE");
+                    actions.add("HATCH");
+                    actions.add("DAYCARE_EGG");
                 }
                 case "+pokemon" -> changeTypes.add("GAIN_POKEMON");
                 case "-pokemon" -> changeTypes.add("LOSS_POKEMON");
@@ -358,7 +456,17 @@ public final class PokeLogCommand {
                 case "trade" -> actions.add("TRADE");
                 case "gift" -> actions.add("GIFT");
                 case "capture", "catch" -> actions.add("CAPTURE");
+                case "deposit" -> actions.add("PC_DEPOSIT");
+                case "withdraw" -> actions.add("PC_WITHDRAW");
+                case "pc" -> {
+                    actions.add("PC_DEPOSIT");
+                    actions.add("PC_WITHDRAW");
+                }
+                case "item", "itemused", "item_used" -> actions.add("ITEM_USED");
+                case "hatch" -> actions.add("HATCH");
+                case "daycare" -> actions.add("DAYCARE_EGG");
                 case "evolve", "evolution" -> actions.add("EVOLVE");
+                case "levelup", "level_up" -> actions.add("LEVEL_UP");
                 case "delete", "release" -> actions.add("DELETE");
                 default -> {}
             }
@@ -484,7 +592,7 @@ public final class PokeLogCommand {
 
         MutableComponent line =
                 Component.literal("[#" + row.id() + " " + time + "] ").withStyle(ChatFormatting.DARK_GRAY);
-        line = line.append(Component.literal(pad(action, 9) + " ").withStyle(actionColor(action)));
+        line = line.append(Component.literal(pad(action, 11) + " ").withStyle(actionColor(action)));
 
         String mon = shinyTag + (row.species() != null ? row.species() : "?") + " Lv." + row.level();
         if (row.nickname() != null && !row.nickname().isEmpty()) mon += " \"" + row.nickname() + "\"";
@@ -522,6 +630,12 @@ public final class PokeLogCommand {
             case "CAPTURE" -> ChatFormatting.BLUE;
             case "EVOLVE" -> ChatFormatting.GOLD;
             case "HELD_ITEM" -> ChatFormatting.DARK_AQUA;
+            case "HATCH" -> ChatFormatting.YELLOW;
+            case "LEVEL_UP" -> ChatFormatting.AQUA;
+            case "PC_DEPOSIT" -> ChatFormatting.DARK_GREEN;
+            case "PC_WITHDRAW" -> ChatFormatting.DARK_RED;
+            case "ITEM_USED" -> ChatFormatting.LIGHT_PURPLE;
+            case "DAYCARE_EGG" -> ChatFormatting.LIGHT_PURPLE;
             default -> ChatFormatting.WHITE;
         };
     }
@@ -600,21 +714,30 @@ public final class PokeLogCommand {
             throw new IllegalStateException(playerName + " must be online to receive the restored Pokemon.");
         }
 
-        net.minecraft.nbt.CompoundTag tag = net.minecraft.nbt.TagParser.parseTag(candidate.nbtSnapshot());
+        CompoundTag tag = TagParser.parseTag(candidate.nbtSnapshot());
 
-        com.pixelmonmod.pixelmon.api.pokemon.Pokemon restored =
-                com.pixelmonmod.pixelmon.api.pokemon.PokemonFactory.create(
-                        com.pixelmonmod.pixelmon.api.registries.PixelmonSpecies.PIKACHU.getValueUnsafe());
+        Pokemon restored = PokemonFactory.create(PixelmonSpecies.PIKACHU.getValueUnsafe());
         restored.readFromNBT(tag, server.registryAccess());
 
-        var party = com.pixelmonmod.pixelmon.api.storage.StorageProxy.getPartyNow(targetPlayer);
+        var party = StorageProxy.getPartyNow(targetPlayer);
         if (party == null) {
             throw new IllegalStateException("Could not load " + playerName + "'s party storage.");
         }
 
         boolean added = party.add(restored);
         if (!added) {
-            throw new IllegalStateException(playerName + "'s party is full - free up a slot and try again.");
+            var pcFuture = StorageProxy.getPCForPlayer(targetPlayer);
+            if (pcFuture != null) {
+                var pc = pcFuture.join();
+                if (pc != null) {
+                    added = pc.add(restored);
+                }
+            }
+        }
+
+        if (!added) {
+            throw new IllegalStateException(
+                    playerName + "'s storage is completely full - free up a slot and try again.");
         }
     }
 
@@ -672,7 +795,7 @@ public final class PokeLogCommand {
     private static int doExport(CommandSourceStack source, Supplier<Database> dbSupplier, String argsString) {
         Database db = dbSupplier.get();
         if (db == null) {
-            source.sendFailure(Component.literal("PokeLogger database is not ready yet."));
+            source.sendFailure(Component.literal("Usage: /plr export <player> [t:<duration>]"));
             return 0;
         }
 
@@ -712,7 +835,7 @@ public final class PokeLogCommand {
                                 (row.action().equals("TRADE") || row.action().equals("GIFT")) && row.otherName() != null
                                         ? "-> " + row.otherName()
                                         : (row.detail() != null ? row.detail() : "");
-                        writer.printf("[%s] %-9s %s  %s%n", time, row.action(), mon, extra);
+                        writer.printf("[%s] %-11s %s  %s%n", time, row.action(), mon, extra);
                     }
                 }
 
@@ -772,11 +895,13 @@ public final class PokeLogCommand {
                                 .withStyle(ChatFormatting.GRAY)),
                 Component.literal("    a:<f>     / action:<f>      ")
                         .withStyle(ChatFormatting.AQUA)
-                        .append(Component.literal("trade, gift, capture, evolve, delete, helditem,")
+                        .append(Component.literal("trade, gift, capture, hatch, daycare, evolve, levelup, delete,")
                                 .withStyle(ChatFormatting.GRAY)),
                 Component.literal("                                ")
-                        .append(Component.literal("pokemon, +pokemon, -pokemon, +helditem, -helditem")
+                        .append(Component.literal("deposit, withdraw, pc, itemused, pokemon, +pokemon, -pokemon,")
                                 .withStyle(ChatFormatting.GRAY)),
+                Component.literal("                                ")
+                        .append(Component.literal("+helditem, -helditem").withStyle(ChatFormatting.GRAY)),
                 Component.literal("    i:<text>  / include:<text>  ")
                         .withStyle(ChatFormatting.AQUA)
                         .append(Component.literal("match species / nickname / item name")
@@ -788,8 +913,13 @@ public final class PokeLogCommand {
                 Component.literal("  Examples:").withStyle(ChatFormatting.DARK_GRAY),
                 Component.literal("    /plr l diablo t:1d").withStyle(ChatFormatting.GREEN),
                 Component.literal("    /plr l u:diablo a:trade,gift t:7d").withStyle(ChatFormatting.GREEN),
-                Component.literal("    /plr l diablo a:+pokemon i:charizard t:30d")
-                        .withStyle(ChatFormatting.GREEN),
+                Component.literal("    /plr l diablo a:pc i:charizard t:30d").withStyle(ChatFormatting.GREEN),
+                Component.literal("/plr inspect")
+                        .withStyle(ChatFormatting.YELLOW)
+                        .append(Component.literal(" (alias: /plr i)").withStyle(ChatFormatting.GRAY)),
+                Component.literal(
+                                "  Toggle inspector mode to right/left click entities and blocks to view their history.")
+                        .withStyle(ChatFormatting.GRAY),
                 Component.literal("/plr rollback <player> [index]").withStyle(ChatFormatting.YELLOW),
                 Component.literal("  Preview + restore a released Pokemon. index defaults to 1 (most recent).")
                         .withStyle(ChatFormatting.GRAY),

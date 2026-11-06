@@ -73,9 +73,9 @@ tasks.withType(ProcessResources).configureEach {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+    dependsOn 'spotlessApply'
 }
 
-// IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {
     module {
         downloadSources = true
@@ -84,17 +84,17 @@ idea {
 }
 
 spotless {
-  java {
+    java {
 
-    removeUnusedImports()
-    forbidWildcardImports()
-    forbidModuleImports()
+        removeUnusedImports()
+        forbidWildcardImports()
+        forbidModuleImports()
 
-    cleanthat()
+        cleanthat()
 
-    palantirJavaFormat()
-    
-    importOrder('', '\\n', 'java|javax', '\\n', 'net.neoforged', '\\n', 'net.minecraft', '\\n', 'com.pixelmonmod', '\\n', '\\#')
+        palantirJavaFormat()
 
-  }
+        importOrder('', '\\n', 'java|javax', '\\n', 'net.neoforged', '\\n', 'net.minecraft', '\\n', 'com.pixelmonmod', '\\n', '\\#')
+
+    }
 }

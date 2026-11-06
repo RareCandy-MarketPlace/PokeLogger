@@ -86,6 +86,22 @@ public class Database {
             st.execute("CREATE INDEX IF NOT EXISTS idx_poke_log_pokemon ON poke_log(pokemon_uuid);");
             st.execute(
                     "CREATE INDEX IF NOT EXISTS idx_poke_log_rollback ON poke_log(player_name COLLATE NOCASE, action, rolled_back, timestamp DESC);");
+
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS block_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    player_uuid TEXT,
+                    player_name TEXT,
+                    block_id TEXT,
+                    dim TEXT,
+                    x INTEGER,
+                    y INTEGER,
+                    z INTEGER
+                );
+                """);
+            st.execute("CREATE INDEX IF NOT EXISTS idx_block_log_pos ON block_log(x, y, z, dim);");
         }
     }
 
@@ -151,6 +167,26 @@ public class Database {
             ps.executeUpdate();
         } catch (SQLException e) {
             LOGGER.log(Level.WARNING, "Failed to write PokeLogger entry", e);
+        }
+    }
+
+    public void insertBlock(BlockLogEntry entry) {
+        String sql =
+                "INSERT INTO block_log (timestamp, action, player_uuid, player_name, block_id, dim, x, y, z) VALUES (?,?,?,?,?,?,?,?,?)";
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, entry.timestamp());
+            ps.setString(2, entry.action());
+            ps.setString(3, entry.playerUuid().toString());
+            ps.setString(4, entry.playerName());
+            ps.setString(5, entry.blockId());
+            ps.setString(6, entry.dimension());
+            ps.setInt(7, entry.x());
+            ps.setInt(8, entry.y());
+            ps.setInt(9, entry.z());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to write BlockLogger entry", e);
         }
     }
 
@@ -222,6 +258,66 @@ public class Database {
             }
         } catch (SQLException e) {
             LOGGER.log(Level.WARNING, "Failed to query PokeLogger entries", e);
+        }
+        return rows;
+    }
+
+    public List<LogRow> lookupByPokemon(String pokemonUuid, int limit) {
+        String sql =
+                "SELECT id, timestamp, action, player_name, other_name, species, nickname, level, shiny, detail, change_type, rolled_back "
+                        + "FROM poke_log WHERE pokemon_uuid = ? ORDER BY timestamp DESC LIMIT ?";
+
+        List<LogRow> rows = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, pokemonUuid);
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new LogRow(
+                            rs.getLong("id"),
+                            rs.getLong("timestamp"),
+                            rs.getString("action"),
+                            rs.getString("player_name"),
+                            rs.getString("other_name"),
+                            rs.getString("species"),
+                            rs.getString("nickname"),
+                            rs.getInt("level"),
+                            rs.getInt("shiny") == 1,
+                            rs.getString("detail"),
+                            rs.getString("change_type"),
+                            rs.getInt("rolled_back") == 1));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to query PokeLogger entries by Pokemon UUID", e);
+        }
+        return rows;
+    }
+
+    public List<BlockLogRow> lookupBlock(int x, int y, int z, String dim, int limit) {
+        String sql =
+                "SELECT id, timestamp, action, player_name, block_id FROM block_log WHERE x = ? AND y = ? AND z = ? AND dim = ? ORDER BY timestamp DESC LIMIT ?";
+        List<BlockLogRow> rows = new ArrayList<>();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, x);
+            ps.setInt(2, y);
+            ps.setInt(3, z);
+            ps.setString(4, dim);
+            ps.setInt(5, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new BlockLogRow(
+                            rs.getLong("id"),
+                            rs.getLong("timestamp"),
+                            rs.getString("action"),
+                            rs.getString("player_name"),
+                            rs.getString("block_id")));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to query BlockLogger entries", e);
         }
         return rows;
     }
@@ -365,4 +461,6 @@ public class Database {
             boolean shiny,
             String pokemonUuid,
             String nbtSnapshot) {}
+
+    public record BlockLogRow(long id, long timestamp, String action, String playerName, String blockId) {}
 }
